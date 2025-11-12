@@ -1,0 +1,178 @@
+<!doctype html>
+<html lang="tr">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>Skolyoz Ön Değerlendirme (Teachable Machine)</title>
+  <style>
+    body { font-family: system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial; padding: 18px; background:#f7f7fb; color:#111; }
+    .card { background: white; border-radius:12px; padding:16px; box-shadow: 0 6px 18px rgba(20,20,50,0.06); max-width:820px; margin:12px auto; }
+    h1 { margin:0 0 8px 0; font-size:20px; }
+    p.lead { margin:0 0 12px 0; color:#444; }
+    .row { display:flex; gap:14px; flex-wrap:wrap; align-items:center; }
+    #preview { max-width:300px; max-height:420px; border-radius:8px; object-fit:contain; background:#eee; padding:6px; }
+    .controls { display:flex; gap:8px; align-items:center; }
+    .result { margin-top:12px; }
+    .label { padding:10px; border-radius:8px; background:#fbfbfd; margin-bottom:8px; display:flex; justify-content:space-between; align-items:center; }
+    .label strong { font-size:14px; }
+    .percent { font-family: monospace; }
+    #main-result { font-size:18px; font-weight:700; margin-top:12px; }
+    small.footer { display:block; margin-top:14px; color:#666; font-size:12px; }
+    .muted { color:#666; font-size:13px; }
+    #loading { display:none; margin-left:8px; font-size:13px; color:#666; }
+    input[type=file] { cursor:pointer; }
+  </style>
+</head>
+<body>
+  <div class="card">
+    <h1>Skolyoz Ön Değerlendirme (Upload)</h1>
+    <p class="lead">Röntgen görüntüsünü seç → model otomatik analiz etsin. (Sunum için hızlı ve temiz.)</p>
+
+    <div class="row">
+      <div>
+        <div class="controls">
+          <label>
+            <input id="input-image" type="file" accept="image/*" />
+          </label>
+          <div id="loading">Model yükleniyor... lütfen bekleyin</div>
+        </div>
+
+        <div style="margin-top:10px">
+          <img id="preview" alt="Görüntü önizleme" src="" />
+        </div>
+      </div>
+
+      <div style="flex:1; min-width:260px;">
+        <div class="muted">Sonuçlar (yüzde olarak):</div>
+        <div id="results" class="result">
+          <!-- Dinamik olarak doldurulacak -->
+        </div>
+
+        <div id="main-result" aria-live="polite"></div>
+        <small class="muted" id="confidence-note"></small>
+      </div>
+    </div>
+
+    <small class="footer">
+      Not: Bu araç klinik teşhis amaçlı değildir. Erken risk taraması / ön değerlendirme amaçlıdır.
+    </small>
+  </div>
+
+  <!-- TensorFlow.js ve Teachable Machine image library -->
+  <script src="https://cdn.jsdelivr.net/npm/@tensorflow/tfjs@latest/dist/tf.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/@teachablemachine/image@latest/dist/teachablemachine-image.min.js"></script>
+
+  <script>
+    // Ayarlar (eğer model klasörünü yerel koyduysan yolu böyle bırak)
+    const MODEL_PATH = "model/model.json";       // <--- model klasörünü index.html ile aynı dizine koy
+    const METADATA_PATH = "model/metadata.json";
+
+    // Görüntü sınıf isimleri Teachable Machine ile eşleşmeli
+    // Senin verdiğin tam Türkçe sınıf isimleri:
+    const CLASS_LABELS = [
+      "Normal Duruş",
+      "Hafif Skolyozlu Duruş",
+      "İleri Derece Skolyozlu Duruş"
+    ];
+
+    let model, maxPredictions;
+    const inputEl = document.getElementById("input-image");
+    const preview = document.getElementById("preview");
+    const resultsDiv = document.getElementById("results");
+    const mainResult = document.getElementById("main-result");
+    const loading = document.getElementById("loading");
+    const confidenceNote = document.getElementById("confidence-note");
+
+    async function loadModel() {
+      loading.style.display = "inline";
+      try {
+        model = await tmImage.load(MODEL_PATH, METADATA_PATH);
+        maxPredictions = model.getTotalClasses();
+        // Eğer metadata sınıf isimleri farklıysa bunları güvenlik amaçlı kontrol edebiliriz
+        loading.style.display = "none";
+      } catch (err) {
+        loading.style.display = "none";
+        alert("Model yüklenirken hata oluştu. Model klasörünün doğru dizinde ve 'model/model.json' adıyla bulunduğundan emin ol.");
+        console.error(err);
+      }
+    }
+
+    // Sayfa açıldığında modeli yükle
+    loadModel();
+
+    // Resim seçildiğinde otomatik preview + predict
+    inputEl.addEventListener("change", async (evt) => {
+      const file = evt.target.files && evt.target.files[0];
+      if (!file) return;
+
+      // preview
+      const url = URL.createObjectURL(file);
+      preview.src = url;
+
+      // Kısa delay ile görüntü yüklendikten sonra predict et
+      preview.onload = async () => {
+        // Bekle model yüklendi mi
+        if (!model) {
+          // Eğer model henüz yüklenmediyse kullanıcıyı bilgilendir
+          loading.style.display = "inline";
+          await waitForModel();
+          loading.style.display = "none";
+        }
+        await runPredict(preview);
+        // serbest bırak
+        URL.revokeObjectURL(url);
+      };
+    });
+
+    // Model hazır olana kadar bekleyen yardımcı
+    function waitForModel() {
+      return new Promise((resolve) => {
+        const t = setInterval(() => {
+          if (model) { clearInterval(t); resolve(); }
+        }, 200);
+      });
+    }
+
+    async function runPredict(imageElement) {
+      try {
+        // Teachable Machine predict - doğrudan image element ile
+        const prediction = await model.predict(imageElement);
+
+        // prediction array uzunluğu maxPredictions
+        // Build results list: her satır için yüzde
+        // Map sınıfları kesin olarak CLASS_LABELS ile eşleştiriyoruz (güvenlik)
+        resultsDiv.innerHTML = ""; // temizle
+
+        // create an array of {label, prob}
+        const items = prediction.map((p, i) => {
+          const label = CLASS_LABELS[i] ?? p.className ?? ("Sınıf " + i);
+          const prob = (p.probability ?? p.prob ?? 0);
+          return { label, prob, index: i };
+        });
+
+        // show each with percentage
+        items.forEach(it => {
+          const percent = (it.prob * 100).toFixed(1) + "%";
+          const wrapper = document.createElement("div");
+          wrapper.className = "label";
+          wrapper.innerHTML = `<strong>${it.label}</strong><span class="percent">${percent}</span>`;
+          resultsDiv.appendChild(wrapper);
+        });
+
+        // highlight top result
+        items.sort((a,b)=> b.prob - a.prob);
+        const top = items[0];
+        mainResult.innerText = `Tahmin: ${top.label} — %${(top.prob*100).toFixed(1)}`;
+        confidenceNote.innerText = "Model çıktıları tahmini olasılıklardır. Klinik değerlendirme yerine geçmez.";
+
+      } catch (err) {
+        console.error("Predict hatası:", err);
+        alert("Analiz sırasında hata oluştu. Konsolu kontrol et.");
+      }
+    }
+
+    // Eğer istersen test için local bir örnek resmi otomatik yükleyebilirsin.
+    // (Sunumda kullanma istersen kaldır)
+  </script>
+</body>
+</html>
